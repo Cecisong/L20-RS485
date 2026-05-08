@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>制程段内报送抽取策略 — 业务图解</title>
+  <style>
+    :root {
+      --bg: #0a0a0c;
+      --panel: #12121a;
+      --border: #2a2a36;
+      --text: #e8e8ef;
+      --muted: #9a9aaf;
+      --accent: #6ea8ff;
+      --state1: #ffb020;
+      --state2: #5bd6a6;
+      --step-bg: #18182a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      padding: 2rem 1.25rem 3rem;
+    }
+    .wrap { max-width: 980px; margin: 0 auto; }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+      margin: 0 0 0.5rem;
+    }
+    .subtitle { color: var(--muted); font-size: 0.95rem; margin-bottom: 1.75rem; }
+
+    .legend {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    @media (max-width: 720px) {
+      .legend { grid-template-columns: 1fr; }
+    }
+    .legend-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+    }
+    .legend-card h3 {
+      margin: 0 0 0.5rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-bottom: 0.35rem;
+    }
+    .pill .num {
+      width: 2rem;
+      height: 2rem;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-variant-numeric: tabular-nums;
+    }
+    .pill .n1 { background: rgba(255, 176, 32, 0.18); color: var(--state1); border: 1px solid rgba(255, 176, 32, 0.45); }
+    .pill .n2 { background: rgba(91, 214, 166, 0.14); color: var(--state2); border: 1px solid rgba(91, 214, 166, 0.45); }
+
+    section.step {
+      margin-bottom: 2.5rem;
+    }
+    .step-head {
+      display: flex;
+      align-items: baseline;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.75rem;
+    }
+    .step-num {
+      background: var(--step-bg);
+      border: 1px solid var(--border);
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 0.8rem;
+      padding: 0.2rem 0.55rem;
+      border-radius: 6px;
+      letter-spacing: 0.04em;
+    }
+    .step-title { font-size: 1.05rem; font-weight: 650; margin: 0; }
+    .narrative {
+      background: var(--panel);
+      border-left: 3px solid var(--accent);
+      padding: 0.85rem 1rem;
+      border-radius: 0 8px 8px 0;
+      margin: 0 0 1rem;
+      font-size: 0.95rem;
+      color: #d5d5e5;
+    }
+    .narrative strong { color: #fff; font-weight: 650; }
+
+    .matrix-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #07070a;
+    }
+    table.matrix {
+      border-collapse: collapse;
+      width: 100%;
+      min-width: 640px;
+      font-size: 0.92rem;
+    }
+    table.matrix th,
+    table.matrix td {
+      border: 1px solid var(--border);
+      padding: 0.55rem 0.65rem;
+      text-align: center;
+    }
+    table.matrix th {
+      background: #14141c;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+    }
+    table.matrix td.sn {
+      text-align: left;
+      font-weight: 650;
+      color: #cfd0dc;
+      background: #101018;
+      white-space: nowrap;
+    }
+    table.matrix td.cell-empty {
+      color: #4a4a58;
+      font-size: 1.1rem;
+    }
+    td.state1 {
+      background: rgba(255, 176, 32, 0.12);
+      color: var(--state1);
+      font-weight: 800;
+      font-size: 1.05rem;
+    }
+    td.state2 {
+      background: rgba(91, 214, 166, 0.1);
+      color: var(--state2);
+      font-weight: 800;
+      font-size: 1.05rem;
+    }
+
+    .flow {
+      margin-top: 1rem;
+      padding: 1rem;
+      border-radius: 10px;
+      border: 1px dashed var(--border);
+      background: rgba(110, 168, 255, 0.05);
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+    .flow ol {
+      margin: 0.35rem 0 0;
+      padding-left: 1.2rem;
+      color: #c8c8d8;
+    }
+    .flow li { margin: 0.35rem 0; }
+
+    footer {
+      margin-top: 2rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    .premise-banner {
+      background: linear-gradient(135deg, rgba(255, 80, 80, 0.12), rgba(110, 168, 255, 0.08));
+      border: 1px solid rgba(255, 120, 120, 0.35);
+      border-radius: 12px;
+      padding: 1rem 1.15rem;
+      margin-bottom: 1.75rem;
+      font-size: 0.94rem;
+      color: #e0e0eb;
+    }
+    .premise-banner strong { color: #ffb4b4; }
+    .th-sub {
+      display: block;
+      font-weight: 500;
+      font-size: 0.65rem;
+      color: #7a7a92;
+      letter-spacing: 0.02em;
+      margin-top: 0.2rem;
+    }
+    th.fa-col { color: #c9a227; }
+
+    .rework-section {
+      margin-bottom: 2.5rem;
+      padding: 1.25rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .rework-section h2 {
+      margin: 0 0 0.75rem;
+      font-size: 1.05rem;
+      font-weight: 650;
+    }
+    .split-flow {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-top: 0.75rem;
+    }
+    @media (max-width: 720px) {
+      .split-flow { grid-template-columns: 1fr; }
+    }
+    .path-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      background: #0e0e14;
+    }
+    .path-card h4 {
+      margin: 0 0 0.5rem;
+      font-size: 0.82rem;
+      color: var(--accent);
+      letter-spacing: 0.04em;
+    }
+    .path-card p { margin: 0; font-size: 0.9rem; color: #b8b8cc; }
+    .path-arrow {
+      font-family: ui-monospace, monospace;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin: 0.5rem 0;
+      line-height: 1.5;
+    }
+    .pending-note {
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      background: rgba(110, 168, 255, 0.07);
+      border-left: 3px solid var(--accent);
+      font-size: 0.88rem;
+      color: #b5b5c8;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>制程段内对客户报送：抽取状态怎么看</h1>
+    <p class="subtitle">
+      下图沿用「每条 SN 一行、每个工站一列」的矩阵。格子里的数字不是产量、也不是第几次过站，而是<strong>报送处理状态</strong>。
+      列 <strong>FA</strong> 表示<strong>返修状态</strong>（与 A1→Finish 的线性前进不是同一类维度），用于标注返修回流与后续叙事分支。
+    </p>
+
+    <div class="premise-banner" role="note">
+      <strong>当前策略前提（请务必先读）：夜班现场不新增产出。</strong>
+      本页所说的「夜班口径」主要用于承接<strong>同一天白天</strong>多出来的报送余量，并用统一时间平移（如 +12h）对齐叙事。
+      若夜班仍有真实生产，同一 SN 会与「被顺延到夜班的记录」在时间线上<strong>交织</strong>，容易产生<strong>先后顺序错乱</strong>（像在两条并行流水里穿行），风险显著上升。
+      若未来夜班必须开工，需要<strong>单独升级</strong>规则（分区、窗口或队列），不在此页面默认覆盖。
+    </div>
+
+    <div class="legend">
+      <div class="legend-card">
+        <h3>状态「1」</h3>
+        <div class="pill"><span class="num n1">1</span></div>
+        <p style="margin:0; font-size:0.92rem; color:#bbb;">
+          表示：<strong style="color:#fff">在本轮抽取中要办理撤下</strong>。办理完成后，同一位置会翻成「2」，表示这笔已从对客户主路径迁出，进入对照登记 / 夜班叙事。
+        </p>
+      </div>
+      <div class="legend-card">
+        <h3>状态「2」</h3>
+        <div class="pill"><span class="num n2">2</span></div>
+        <p style="margin:0; font-size:0.92rem; color:#bbb;">
+          表示：<strong style="color:#fff">在更早的轮次已经抽走过</strong>。本轮生成对客户数据时，优先对照登记：<strong style="color:#fff">命中即整条链路一致处理</strong>，避免同一 SN 在不同工站「有的还在、有的不见了」。
+        </p>
+      </div>
+    </div>
+
+    <div class="rework-section">
+      <h2>FA：返修之后「回到线上」至少有两种走法</h2>
+      <p style="margin:0 0 0.5rem; font-size:0.95rem; color:#c4c4d4;">
+        返修完成后重新进线，现场常见两类情况。策略上必须区分，否则会把「从哪一站重新开始」写错；两类路径后续<strong>都可以</strong>纳入同一张状态表的演进，用来驱动抽取与 1/2 标记，但<strong>细则尚在研讨</strong>（例如返修重复过站是否占用客户工站计划等）。
+      </p>
+      <div class="split-flow">
+        <div class="path-card">
+          <h4>路径 A · 局部回线</h4>
+          <div class="path-arrow">返修结束 → 回到<strong>当前/就近工站</strong> → 继续往后流转</div>
+          <p>矩阵上往往表现为：中段某一工站再次出现该 SN 的记录；同一工站多条记录必须按<strong>时间次序</strong>办理抽取，避免张冠李戴。</p>
+        </div>
+        <div class="path-card">
+          <h4>路径 B · 重头再来</h4>
+          <div class="path-arrow">返修结束 → 从<strong>线首（如 A1）</strong>重新跑一遍 → 形成新的连续链条</div>
+          <p>矩阵上会在 A1 及后续再次出现一整串足迹；若历史上已有格子为「2」（早前已抽），新一轮链条必须与<strong>对照登记</strong>一致，否则会出现同一 SN 两条并行故事。</p>
+        </div>
+      </div>
+      <div class="pending-note">
+        <strong style="color:#cfd0dc;">待定：</strong>可以依据状态表（含 FA 与路径类型）更新来抽取，但两条路径对窗口计数与计划消耗方式不同，需单独定稿后再对外承诺自动化规则。
+      </div>
+    </div>
+
+    <!-- Step A -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">STEP A</span>
+        <h2 class="step-title">起点：还没有触发本轮抽取</h2>
+      </div>
+      <p class="narrative">
+        业务把它理解成「白板」：矩阵只帮助你<strong>对齐 SN 与工站顺序</strong>。此时还没有标注本轮要撤下的格子。
+        真实 raw 里可能有返修导致的同站多条记录；策略会在后台按<strong>时间顺序</strong>挑选对应的一笔来挂状态，这里只用矩阵表达「落在哪个工站格子」。
+      </p>
+      <div class="matrix-wrap">
+        <table class="matrix" aria-label="起点矩阵">
+          <thead>
+            <tr>
+              <th>SN / 工站</th>
+              <th>A1</th><th>A2</th><th>A3</th><th>A4</th><th>A5</th>
+              <th>Finish<span class="th-sub">段内正常收束</span></th>
+              <th class="fa-col">FA<span class="th-sub">返修状态</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td class="sn">SN1</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td></tr>
+            <tr><td class="sn">SN2</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td></tr>
+            <tr><td class="sn">SN3</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td></tr>
+            <tr><td class="sn">SN4</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td></tr>
+            <tr><td class="sn">SN5</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="flow">
+        <strong style="color:#cfd0dc;">阅读顺序提示：</strong>从左到右对应制程前进方向；从上到下是不同的 SN。这与现场「先有前置工站、后有后置工站」的直觉一致。
+      </div>
+    </section>
+
+    <!-- Step B -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">STEP B</span>
+        <h2 class="step-title">策略算完后：本轮待撤下的位置标「1」</h2>
+      </div>
+      <p class="narrative">
+        系统根据<strong>本窗口计划与浮动</strong>，决定要撤下多少条「对客户主路径」的记录。凡本轮确定要撤下的那一笔（在某 SN、某工站的格子），先标为<strong>「1」</strong>。
+        同一 SN 若在流水上还要继续出现在后续工站，后续相关格子也会一起标「1」，保证<strong>叙事连续</strong>：要么这条链在本轮一起迁出主报送，要么就不做半拉子。
+      </p>
+      <div class="matrix-wrap">
+        <table class="matrix" aria-label="本轮待抽取">
+          <thead>
+            <tr>
+              <th>SN / 工站</th>
+              <th>A1</th><th>A2</th><th>A3</th><th>A4</th><th>A5</th>
+              <th>Finish<span class="th-sub">段内正常收束</span></th>
+              <th class="fa-col">FA<span class="th-sub">返修状态</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="sn">SN1</td>
+              <td class="state1">1</td><td class="state1">1</td><td class="state1">1</td>
+              <td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td>
+            </tr>
+            <tr>
+              <td class="sn">SN2</td>
+              <td class="state1">1</td><td class="state1">1</td>
+              <td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td>
+            </tr>
+            <tr>
+              <td class="sn">SN3</td>
+              <td class="cell-empty">—</td>
+              <td class="state1">1</td><td class="state1">1</td><td class="state1">1</td><td class="state1">1</td>
+              <td class="cell-empty">—</td><td class="cell-empty">—</td>
+            </tr>
+            <tr><td class="sn">SN4</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td></tr>
+            <tr><td class="sn">SN5</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="flow">
+        <strong style="color:#cfd0dc;">图中故事（示例）：</strong>
+        <ol>
+          <li><strong>SN1</strong>：本轮要从 A1→A3 的主报送里撤下一条完整链上的记录，因此前三格都是「1」（表示<strong>本轮要办</strong>）。尚未走到 A4，故后面仍是空白。</li>
+          <li><strong>SN2</strong>：只在 A1、A2 本轮要撤下，因此两格为「1」。</li>
+          <li><strong>SN3</strong>：中段 A2→A5 本轮要撤下，故连续四格为「1」。</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- Step C -->
+    <section class="step">
+      <div class="step-head">
+        <span class="step-num">STEP C</span>
+        <h2 class="step-title">本轮办理结束：已迁出的位置变「2」</h2>
+      </div>
+      <p class="narrative">
+        办理动作包括：写入对照表、把 raw 迁入抽取缓存、并按约定做<strong>时间叙事对齐</strong>（例如进站相关时间整体 +12 小时，使夜班口径连贯）。
+        办理完成后，这些格子不再标「1」，而标<strong>「2」</strong>——意思是<strong>别再当作本轮待办</strong>；以后推送前查对照表，命中则直接按规则提取走。
+      </p>
+      <div class="matrix-wrap">
+        <table class="matrix" aria-label="历史已抽取">
+          <thead>
+            <tr>
+              <th>SN / 工站</th>
+              <th>A1</th><th>A2</th><th>A3</th><th>A4</th><th>A5</th>
+              <th>Finish<span class="th-sub">段内正常收束</span></th>
+              <th class="fa-col">FA<span class="th-sub">返修状态</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="sn">SN1</td>
+              <td class="state2">2</td><td class="state2">2</td><td class="state2">2</td>
+              <td class="state1">1</td><td class="state1">1</td><td class="state1">1</td><td class="cell-empty">—</td>
+            </tr>
+            <tr>
+              <td class="sn">SN2</td>
+              <td class="state2">2</td><td class="state2">2</td>
+              <td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td>
+            </tr>
+            <tr>
+              <td class="sn">SN3</td>
+              <td class="cell-empty">—</td>
+              <td class="state2">2</td><td class="state2">2</td><td class="state2">2</td><td class="state2">2</td>
+              <td class="cell-empty">—</td><td class="cell-empty">—</td>
+            </tr>
+            <tr><td class="sn">SN4</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td></tr>
+            <tr><td class="sn">SN5</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td><td class="cell-empty">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="flow">
+        <strong style="color:#cfd0dc;">图中故事（承接上一步的示例延伸）：</strong>
+        <ol>
+          <li>原先标「1」且已办理完成的格子，变成<strong>绿色「2」</strong>：表示<strong>历史上已经抽走过</strong>，不是本轮待办。</li>
+          <li><strong>SN1</strong> 继续沿产线前进：在 A4→Finish 新出现了<strong>本轮仍要撤下</strong>的格子，因此它们仍是<strong>「1」</strong>——表示<strong>下一轮或本轮后续片段仍要办理</strong>（取决于你们把「轮次」按窗口切还是按批次切）。业务看图时只需记住：<strong>1=这一轮还没办完；2=以前办过了</strong>。</li>
+          <li>这样的混合画面很常见：同一条 SN 上<strong>既有历史已抽（2）</strong>，又有<strong>新产生的待抽片段（1）</strong>，对应「产量往前流动后，又有新的工站落点需要纳入报送调整」。</li>
+        </ol>
+      </div>
+    </section>
+
+    <footer>
+      说明：矩阵为业务沟通示意图。<strong>FA</strong> 列为返修语义列，不等同于物理上的「Finish 的下一站」。真实系统会在 raw 层保存 SN、工站、进站时间与次序等，用以保证返修多次过站时可排序、可对照登记命中。
+      <strong>夜班零产出</strong>为本策略默认前提；FA 两条路径的抽取细则待定。策略全文见同目录 <code>MES_PUSH_BUSINESS_STRATEGY.md</code>。
+    </footer>
+  </div>
+</body>
+</html>
