@@ -1,7 +1,7 @@
 # SOP 工站视频步骤分割设计说明
 
 **日期**: 2026-11-22  
-**状态**: 修订稿 v3（MOG2 主门控 + 特征降采样约定）  
+**状态**: 修订稿 v4（X-AnyLabeling 桥接 + sop.json 范例；fewshot 标准一轮 / 长视频可漏步）  
 **阶段目标**: 步骤时间轴分割准确度（循环统计 / P50-P95 / NVA 报表接口预留，本期不优化）
 
 ---
@@ -23,16 +23,190 @@
 
 ## 2. 输入 / 输出契约
 
-### 2.1 输入
+### 2.1 输入角色（三件套）
+
+| 角色 | 文件 | 谁维护 | 说明 |
+|------|------|--------|------|
+| 工序定义 | **`sop.json`** | 精益/工艺 | 步骤顺序、短 label、**长文本描述**；与具体视频无关 |
+| 时间轴标注 | **X-AnyLabeling sidecar**（`视频同名.json`） | 标注员 | 只标 `label` + 起止时间；**不在此写每步长描述** |
+| 算法配置 | **`station_config.yaml`** | 算法 | fps、chunk、Viterbi、VLM 等超参 |
+
+标注工具：**不自研**，使用 X-AnyLabeling Video Classifier。流水线用 importer 桥接到内部 `Interval`。
+
+### 2.2 业务约束（fewshot vs 长视频）
+
+| | Fewshot（建原型用的标准一轮） | 长视频（推理 / 评测） |
+|--|------------------------------|----------------------|
+| 步骤是否齐全 | **必须**覆盖 `sop.json` 中全部 `step_id` 各至少一次 | 允许漏步 |
+| 步骤顺序 | **必须**按 `1→2→…→N` 递增出现（可中间插 idle） | 默认仍倾向有序；**允许向前跳步**（`allow_skip_forward: true`） |
+| 中间 `empty`/idle | **允许**，例如 `empty→step1→step2→empty→step3→empty` | 允许 |
+| 回退/返工 `N→…→更早步` | fewshot **不允许** | 仅当 `allow_rework: true`（默认 false） |
+| segment `description` | **忽略**；文案以 `sop.json` 的 `text` 为准 | 同左 |
+
+### 2.3 `sop.json` 范例（工序定义，权威文本来源）
+
+路径建议：`stations/<station_id>/sop.json`。
+
+```json
+{
+  "station_id": "ws_demo",
+  "sop_name": "组装工位-示例SOP",
+  "version": "1.0",
+  "steps": [
+    {
+      "step_id": 1,
+      "label": "step1",
+      "text": "从料盘取零件A，放入治具并压实"
+    },
+    {
+      "step_id": 2,
+      "label": "step2",
+      "text": "锁付两颗 M3 螺丝，力矩达标"
+    },
+    {
+      "step_id": 3,
+      "label": "step3",
+      "text": "扫码绑定，将成品放入流出料道"
+    }
+  ],
+  "idle_labels": ["empty"],
+  "notes": "label 必须与 X-AnyLabeling 中创建的类别名一致；text 供人读、可选图文相似与 VLM，不写入标注片段 description"
+}
+```
+
+字段约定：
+
+- `step_id`：从 1 连续到 N，决定 Viterbi 合法顺序  
+- `label`：标注工具里的短名（`step1` / `step_1` 均可，importer 按 `sop.json` 映射，不靠猜）  
+- `text`：**每步唯一权威描述**；不要依赖 X-AnyLabeling 的 `segments[].description`  
+- `idle_labels`：映射为内部 `idle`（常见 `empty`）
+
+### 2.4 X-AnyLabeling sidecar 范例（时间轴标注）
+
+与视频同目录、同主文件名，例如 `demo.mp4` → `demo.json`。格式遵循 X-AnyLabeling Video Classifier；下列为 **合格 fewshot** 示意（步骤齐全、顺序正确，中间可有 empty）：
+
+```json
+{
+  "version": "1.0.0",
+  "type": "video_classification",
+  "video": "demo.mp4",
+  "fps": 30.0,
+  "duration_ms": 16233,
+  "width": 720,
+  "height": 1280,
+  "labels": ["empty", "step1", "step2", "step3"],
+  "label_colors": {
+    "empty": "#aaffff",
+    "step1": "#ffaaaa",
+    "step2": "#aaffaa",
+    "step3": "#ffffaa"
+  },
+  "segments": [
+    {
+      "id": "s_idle_0",
+      "label": "empty",
+      "start_ms": 0,
+      "end_ms": 1100,
+      "start_frame": 0,
+      "end_frame": 33,
+      "description": ""
+    },
+    {
+      "id": "s_step1",
+      "label": "step1",
+      "start_ms": 1100,
+      "end_ms": 2367,
+      "start_frame": 33,
+      "end_frame": 71,
+      "description": ""
+    },
+    {
+      "id": "s_step2",
+      "label": "step2",
+      "start_ms": 2367,
+      "end_ms": 5467,
+      "start_frame": 71,
+      "end_frame": 164,
+      "description": ""
+    },
+    {
+      "id": "s_idle_1",
+      "label": "empty",
+      "start_ms": 5467,
+      "end_ms": 6200,
+      "start_frame": 164,
+      "end_frame": 186,
+      "description": ""
+    },
+    {
+      "id": "s_step3",
+      "label": "step3",
+      "start_ms": 6200,
+      "end_ms": 11367,
+      "start_frame": 186,
+      "end_frame": 341,
+      "description": ""
+    },
+    {
+      "id": "s_idle_2",
+      "label": "empty",
+      "start_ms": 11367,
+      "end_ms": 16233,
+      "start_frame": 341,
+      "end_frame": 487,
+      "description": ""
+    }
+  ]
+}
+```
+
+`description` 可空；流水线 **不读取** 它作为 SOP 文本。
+
+### 2.5 桥接规则（X-AnyLabeling → 内部）
+
+```text
+sop.json.steps[].label  +  idle_labels
+        │
+        ▼
+sidecar.segments[].label  ──map──►  step_id | idle
+start_ms/end_ms           ──/1000──►  t_start_sec / t_end_sec
+segments[].description    ──ignore──►  (丢弃)
+segments[].id             ──ignore──►  (仅标注工具)
+```
+
+内部结构（内存 / 可选缓存，**不是**标注员手写主格式）：
+
+```json
+{
+  "source": "xanylabeling",
+  "video": "demo.mp4",
+  "segments": [
+    {"label": "idle", "step_id": null, "t_start_sec": 0.0, "t_end_sec": 1.1},
+    {"label": "step_1", "step_id": 1, "t_start_sec": 1.1, "t_end_sec": 2.367},
+    {"label": "step_2", "step_id": 2, "t_start_sec": 2.367, "t_end_sec": 5.467},
+    {"label": "idle", "step_id": null, "t_start_sec": 5.467, "t_end_sec": 6.2},
+    {"label": "step_3", "step_id": 3, "t_start_sec": 6.2, "t_end_sec": 11.367},
+    {"label": "idle", "step_id": null, "t_start_sec": 11.367, "t_end_sec": 16.233}
+  ]
+}
+```
+
+**Fewshot 校验**（导入后强制）：
+
+1. 每个 `step_id ∈ 1..N` 至少出现一次  
+2. 仅保留 step 段时，按时间排序的 `step_id` 序列必须是严格递增的 `1,2,…,N`（允许中间有 idle 段）  
+3. 缺步、跳步、回退 → `ValueError`，拒绝建原型  
+
+**长视频 GT / 推理**：不做「必须齐全」校验；解码侧用 `allow_skip_forward`。
+
+### 2.6 其它输入
 
 | 字段 | 格式 | 说明 |
 |------|------|------|
-| `video` | mp4 等 | 固定机位，桌面手部；长度可为数分钟至数小时 |
-| `sop.steps` | JSON 列表 | 长度 N；每项含 `step_id` (1..N)、`text`（中文描述） |
-| `fewshot.segments` | JSON 列表 | **恰好覆盖 1 轮完整 SOP**；每项 `{step_id, t_start_sec, t_end_sec}`，区间互不重叠且按时间有序 |
-| `station_config` | YAML/JSON | 采样率、chunk、idle 阈值、VLM 开关与配额等（工站级，非视频级硬编码） |
+| `video` | mp4 等 | 固定机位；分钟～小时 |
+| `station_config.yaml` | YAML | 见 §6 |
 
-### 2.2 主输出（本期验收）
+### 2.7 主输出（本期验收）
 
 ```json
 {
@@ -48,7 +222,7 @@
 
 `label ∈ {"step_1".. "step_N", "idle"}`。
 
-### 2.3 衍生输出（接口预留，本期不算分）
+### 2.8 衍生输出（接口预留，本期不算分）
 
 由同一套 `segments` 聚合即可，不另建模型：
 
@@ -83,7 +257,8 @@
 1. **外观不够用时必须有运动流**：固定机位、帧间外观接近时，DINOv2 单流不是完整方案（见 4.1 / 4.4）。
 2. **步骤顺序不靠相似度猜**：相似度只提供「像哪一步」的发射分；**第几步由有序 Viterbi 转移图强制**（见 4.5，这是分割主引擎，不是后处理）。
 3. 主路径全本地；公司 VLM 仅稀疏复核。
-4. 长视频流式；工站切换只换 fewshot + SOP + config。
+4. 长视频流式；工站切换只换 fewshot sidecar + `sop.json` + config。  
+5. Fewshot 必须是标准一轮（可插 idle、不漏步）；长视频推理允许漏步（`allow_skip_forward`）。
 
 ### 3.1 特征是「每帧独立」还是「带序列」？（易混点）
 
@@ -218,7 +393,7 @@ x_t = normalize( concat( a_t ,  γ · o_t ) )     # 默认 γ=1.0，可配
 
 > **常见误解**：以为「和哪一步原型最像」就是分割结果。  
 > **正确关系**：原型相似度只是发射分（emission）；**允许的步骤顺序写在转移图里**，Viterbi 在整段时间上求满足顺序的最优路径。  
-> 没有本模块，系统确实「没有顺序性」；有了本模块，默认 **不可能** 输出 `2→1` 或跳过 3 直接 5（除非打开 `allow_rework` / 合法跳步配置）。
+> 没有本模块，系统确实「没有顺序性」。Fewshot 建库假设标准顺序；**长视频**可配置向前漏步，但默认仍禁止回退返工。
 
 #### 4.5.1 状态与允许边（顺序的精确定义）
 
@@ -226,7 +401,7 @@ x_t = normalize( concat( a_t ,  γ · o_t ) )     # 默认 γ=1.0，可配
 S = { idle, step_1, step_2, ..., step_N }
 ```
 
-**允许的有向边（默认 `allow_rework: false`）**：
+**基线边（始终开启）**：
 
 ```
                   ┌──── self-loop ────┐
@@ -234,29 +409,31 @@ S = { idle, step_1, step_2, ..., step_N }
 idle ──────────► step_1 ──► step_2 ──► ... ──► step_N ──┐
   ▲               │          │                    │      │
   └───────────────┴──────────┴────────────────────┘      │
-        (任意 step_k → idle → 只能进入 step_{k+1}         │
-         若 k=N 则 idle→step_1 开启新一轮)                │
-                                                         │
+        (step_k → idle → step_{k+1}；k=N 则 idle→step_1)   │
                     step_N 也可直接 ──► step_1 ──────────┘
 ```
-
-用转移矩阵语言（非法边概率 = 0 / log = -inf）：
 
 | 转移 | 默认 log-潜势 | 顺序含义 |
 |------|----------------|----------|
 | `step_k → step_k` | `0.0` | 仍停在第 k 步 |
-| `step_k → step_{k+1}` | `-0.2` | **唯一合法前进** |
-| `step_k → idle` | `-0.8` | 步间等待 / NVA 候选 |
+| `step_k → step_{k+1}` | `-0.2` | 正常前进一步 |
+| `step_k → idle` | `-0.8` | 步间等待 / 作业中停顿（对应标注 `empty`） |
 | `idle → idle` | `0.0` | 连续等待 |
-| `idle → step_{k+1}` | `-0.3` | 等待结束后进入**下一步**（由进入 idle 前的 k 决定；开局为 step_1） |
+| `idle → step_{k+1}` | `-0.3` | 等待后进入下一步（开局为 step_1） |
 | `step_N → step_1` | `-0.5` | 新一轮 SOP |
-| `step_k → step_j` (j≠k,j≠k+1) | **-inf** | **禁止跳步/回退** |
 
-因此：若某帧外观更像 step_5，但当前合法状态只允许停在 step_2 或进 step_3 / idle，Viterbi **不会**仅因相似度就标成 5——这就是顺序性的来源。
+**长视频漏步（`allow_skip_forward: true`，推理默认开）**：
 
-**SOP 文本的作用**：给人看、可选文本相似度、VLM 提示；**不替代转移图**。步骤先后以 fewshot 标注顺序与 `sop.steps` 下标为准。
+| 转移 | 默认 log-潜势 | 含义 |
+|------|----------------|------|
+| `step_k → step_j`（`j > k+1`） | `-1.5` | 向前跳过中间步（低于正常 +1 步，避免动辄跳步） |
+| `idle → step_j`（`j` 大于期望 next） | `-1.2` | 停顿后直接进入更后面的步 |
 
-**返工**：仅当 `allow_rework: true` 时增加低概率回退边；默认关。
+**返工（`allow_rework: false` 默认）**：`j < k` 的回退边为 `-inf`；仅当显式打开时再加低概率回退。
+
+因此：相似度不会单独决定步序；漏步必须走转移图上的 skip 边，并可在结果里标成低置信 / 异常供抽检。
+
+**SOP 文本**：来自 `sop.json` 的 `text`；不替代转移图。
 
 #### 4.5.2 发射概率（Emission）—— 「像不像」
 
@@ -357,7 +534,8 @@ alpha_appflow: 1.0                 # 有文本编码器时可 <1
 softmax_temperature: 0.07
 idle_min_sec: 1.0
 min_segment_sec: 0.5
-allow_rework: false                # 顺序：默认禁止跳步/回退
+allow_skip_forward: true           # 长视频推理允许向前漏步；fewshot 校验仍禁止漏步
+allow_rework: false                # 默认禁止回退返工
 use_changepoint_bias: true
 ruptures_pen: 3.0
 vlm:
@@ -434,6 +612,9 @@ sop_step_segmentation/
 | 运动 | **Farneback + HOOF 进原型**；幅度供 idle/PELT |
 | 背景 | **MOG2 主门控**（已验证）+ 光流辅助；默认 soft，不硬抠 |
 | 采样 | **特征降采样**默认 2 fps；MOG 更新可 5 fps；非逐帧提特征 |
+| 标注输入 | X-AnyLabeling sidecar；SOP 文本在独立 `sop.json` |
+| Fewshot | 标准一轮：可插 empty，不漏步、不回退 |
+| 长视频 | `allow_skip_forward: true`；`allow_rework: false` |
 | 顺序 | **有序 HMM 转移图 + Viterbi**（相似度不决定步序） |
 | VLM | 默认关；多宫格稀疏复核 |
 | 本期优化目标 | 仅分割准确度 |
