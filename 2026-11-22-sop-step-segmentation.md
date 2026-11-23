@@ -4,7 +4,7 @@
 
 **Goal:** 实现离线流水线：用工站 1 轮 fewshot 区间 + SOP 文本建双流原型，对流式降采样视频做有序 Viterbi 步骤分割，并以分割指标验收。
 
-**Architecture:** 局部观测（MOG2 软门控 + DINOv2 patch 加权 + Farneback HOOF）在 `sample_fps` 栅格上独立/成对提取；全局用有序 HMM+Viterbi 强制 `1→2→…→N`（可插 idle）。公司 VLM 默认关闭，仅预留多宫格复核接口。
+**Architecture:** 局部观测（MOG2 软门控 + DINOv2 patch 加权 + Farneback HOOF）在 `sample_fps` 栅格上独立/成对提取；全局用有序 HMM+Viterbi。Fewshot 为标准一轮（可插 idle、不漏步），经 X-AnyLabeling sidecar + `sop.json` 桥接；长视频推理默认 `allow_skip_forward`。公司 VLM 默认关闭。
 
 **Tech Stack:** Python 3.11+、PyTorch、timm/transformers(DINOv2)、OpenCV、Decord 或 PyAV、NumPy、SciPy/scikit-learn、ruptures、PyYAML、pytest
 
@@ -17,7 +17,10 @@
 - 主路径不依赖公司 VLM（`vlm.enabled` 默认 false）
 - 长视频按 chunk 流式处理，禁止整片帧列表常驻内存
 - 本期优化目标仅分割准确度；循环/P50/NVA 报表不做
-- 默认 `allow_rework: false`（禁止跳步/回退）；`background.hard_mask: false`
+- Fewshot 校验：步骤 `1..N` 齐全且时间序严格递增；中间 idle/`empty` 允许；缺步拒绝建原型
+- 长视频推理：默认 `allow_skip_forward: true`；默认 `allow_rework: false`
+- 标注主格式为 X-AnyLabeling sidecar；SOP 长文本只在 `sop.json`；忽略 segment `description`
+- `background.hard_mask: false`
 - 所有公共 API 与测试使用英文标识符；用户可见文档可中英
 
 ---
@@ -101,6 +104,7 @@ def test_load_station_example_defaults():
     assert cfg.background.mode == "soft_mog2_union"
     assert cfg.background.hard_mask is False
     assert cfg.vlm.enabled is False
+    assert cfg.allow_skip_forward is True
     assert cfg.allow_rework is False
 ```
 
@@ -159,6 +163,7 @@ class StationConfig:
     softmax_temperature: float = 0.07
     idle_min_sec: float = 1.0
     min_segment_sec: float = 0.5
+    allow_skip_forward: bool = True
     allow_rework: bool = False
     use_changepoint_bias: bool = True
     ruptures_pen: float = 3.0
@@ -177,13 +182,15 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class StepDef:
     step_id: int
+    label: str
     text: str
 
 @dataclass(frozen=True)
 class Interval:
-    step_id: int
     t_start_sec: float
     t_end_sec: float
+    label: str  # "step_1" / "idle"
+    step_id: int | None  # None for idle
 
 @dataclass
 class OutputSegment:
@@ -207,64 +214,76 @@ git commit -m "chore: scaffold package and station config loader"
 
 ---
 
-### Task 2: SOP / fewshot / output JSON schema
+### Task 2: sop.json + X-AnyLabeling bridge + output JSON
 
 **Files:**
 - Create: `src/sop_seg/io/sop_schema.py`
+- Create: `src/sop_seg/io/xanylabeling.py`
 - Create: `tests/test_sop_schema.py`
+- Create: `tests/test_xanylabeling_bridge.py`
+- Reference examples: `examples/sop.json`, `examples/xanylabeling_fewshot_sidecar.json`
 
 **Interfaces:**
-- Consumes: `StepDef`, `Interval`, `OutputSegment`
+- Consumes: spec §2.3–2.5
 - Produces:
-  - `load_sop(path) -> list[StepDef]`
-  - `load_fewshot(path) -> list[Interval]`
-  - `validate_fewshot_covers_one_cycle(steps, intervals) -> None` (raises `ValueError`)
-  - `dump_result(path, segments, sample_fps, encoder, aligner) -> None`
+  - `load_sop(path) -> SopDocument` (`station_id`, `steps: list[StepDef]`, `idle_labels: list[str]`)
+  - `StepDef(step_id: int, label: str, text: str)`
+  - `load_xanylabeling_sidecar(path) -> XanyVideoAnn`
+  - `bridge_intervals(sop: SopDocument, ann: XanyVideoAnn) -> list[Interval]`
+    - map `label` via `sop.steps[].label` / `idle_labels`; `ms/1000`; **ignore `description`**
+  - `validate_fewshot_one_cycle(sop, intervals) -> None`
+    - every `step_id` once in order `1..N`; idle segments allowed between; raise on skip/missing/reorder
+  - `dump_result(path, segments, sample_fps, encoder, aligner) -> None`（spec §2.7）
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
 # tests/test_sop_schema.py
-import json
 from pathlib import Path
-import pytest
-from sop_seg.io.sop_schema import load_sop, load_fewshot, validate_fewshot_covers_one_cycle
+from sop_seg.io.sop_schema import load_sop
 
-def test_validate_fewshot_requires_all_steps_in_order(tmp_path: Path):
-    sop = tmp_path / "sop.json"
-    sop.write_text(json.dumps({"steps": [
-        {"step_id": 1, "text": "a"},
-        {"step_id": 2, "text": "b"},
-    ]}), encoding="utf-8")
-    fs = tmp_path / "fewshot.json"
-    fs.write_text(json.dumps({"segments": [
-        {"step_id": 1, "t_start_sec": 0.0, "t_end_sec": 1.0},
-        {"step_id": 2, "t_start_sec": 1.0, "t_end_sec": 2.0},
-    ]}), encoding="utf-8")
-    steps = load_sop(sop)
-    intervals = load_fewshot(fs)
-    validate_fewshot_covers_one_cycle(steps, intervals)  # no raise
+def test_load_example_sop():
+    sop = load_sop(Path("examples/sop.json"))
+    assert sop.station_id == "ws_demo"
+    assert [s.step_id for s in sop.steps] == [1, 2, 3]
+    assert sop.steps[0].text.startswith("从料盘")
+    assert "empty" in sop.idle_labels
 
-def test_validate_fewshot_rejects_skip(tmp_path: Path):
-    # only step 1 present for N=2 -> ValueError
+# tests/test_xanylabeling_bridge.py
+from pathlib import Path
+from sop_seg.io.sop_schema import load_sop, validate_fewshot_one_cycle
+from sop_seg.io.xanylabeling import load_xanylabeling_sidecar, bridge_intervals
+
+def test_bridge_example_fewshot_allows_mid_idle():
+    sop = load_sop(Path("examples/sop.json"))
+    ann = load_xanylabeling_sidecar(Path("examples/xanylabeling_fewshot_sidecar.json"))
+    intervals = bridge_intervals(sop, ann)
+    validate_fewshot_one_cycle(sop, intervals)  # empty between step2 and step3 OK
+    step_ids = [i.step_id for i in intervals if i.step_id is not None]
+    assert step_ids == [1, 2, 3]
+
+def test_fewshot_rejects_missing_step(tmp_path: Path):
+    # sidecar missing step2 -> validate_fewshot_one_cycle raises ValueError
     ...
 ```
 
 - [ ] **Step 2: Run tests — expect FAIL**
 
-Run: `pytest tests/test_sop_schema.py -v`
+Run: `pytest tests/test_sop_schema.py tests/test_xanylabeling_bridge.py -v`
 
-- [ ] **Step 3: Implement `sop_schema.py`**
+- [ ] **Step 3: Implement loaders + bridge + fewshot validator**
 
-- Enforce: intervals non-overlapping, sorted by time, `step_id` sequence exactly `1..N` once (one cycle).
-- `dump_result` writes spec §2.2 JSON shape.
+- Unknown labels → `ValueError` with label name  
+- Overlapping time ranges → `ValueError`  
+- `description` never copied into `Interval`
 
 - [ ] **Step 4: Run tests — expect PASS**
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -m "feat: add SOP/fewshot schema load and validation"
+git add src/sop_seg/io/sop_schema.py src/sop_seg/io/xanylabeling.py tests/examples
+git commit -m "feat: load sop.json and bridge X-AnyLabeling fewshot sidecars"
 ```
 
 ---
@@ -543,7 +562,7 @@ K-Means via `sklearn.cluster.KMeans` when `M >= 12` and `k=min(k_max, M//4)`, el
 
 **Interfaces:**
 - Produces:
-  - `build_transition_log_matrix(n_steps: int, allow_rework: bool, potentials: dict | None) -> np.ndarray`
+  - `build_transition_log_matrix(n_steps: int, allow_skip_forward: bool, allow_rework: bool, potentials: dict | None) -> np.ndarray`
     - states order: `idle, step_1, ..., step_N` → size `(N+1, N+1)`
   - `emissions_from_similarity(S: np.ndarray, m: np.ndarray, temperature: float, idle_proto_sim: np.ndarray | None) -> np.ndarray`
     - returns log emission `(T, N+1)`
@@ -562,18 +581,23 @@ def test_forbids_skip_even_if_emission_prefers_later_step():
     log_emit = np.full((T, n + 1), -10.0)
     # idle col 0, steps 1..3 -> cols 1..3
     log_emit[:, 3] = 0.0  # always "looks like" step 3
-    log_trans = build_transition_log_matrix(n, allow_rework=False)
+    log_trans = build_transition_log_matrix(n, allow_skip_forward=False, allow_rework=False)
     path = viterbi(log_emit, log_trans)
     # path may stay on early steps then advance; must never visit step_3 before step_1 and step_2 appeared
     first = {s: int(np.argmax(path == s)) for s in (1, 2, 3) if np.any(path == s)}
     assert first[1] < first[2] < first[3]
 
+def test_skip_forward_edge_exists_when_enabled():
+    log_trans = build_transition_log_matrix(3, allow_skip_forward=True, allow_rework=False)
+    # step_1 -> step_3 must be finite when skip enabled (exact state index per augmented scheme)
+    ...
+
 def test_rework_disabled_blocks_backward():
-    log_trans = build_transition_log_matrix(3, allow_rework=False)
-    assert log_trans[3, 1] == -np.inf  # step_3 -> step_1 only via dedicated N→1 edge: state index check carefully
-    # step_2 (idx 2) -> step_1 (idx 1) must be -inf
-    assert log_trans[2, 1] == -np.inf
+    log_trans = build_transition_log_matrix(3, allow_skip_forward=True, allow_rework=False)
+    # step_2 -> step_1 must be -inf
+    ...
 ```
+
 
 Implement idle bookkeeping: track `next_step_after_idle` via expanding state or by encoding next-step in Viterbi with augmented states.
 
@@ -698,7 +722,7 @@ def test_perfect_match_scores_high():
 **Files:**
 - Create: `README.md`
 
-Content: install (`pip install -e .`), prepare `sop.json` / `fewshot.json`, `build-prototypes`, `segment`, `eval`; note GPU optional; warn against video-specific hardcoding; point to spec + this plan.
+Content: install (`pip install -e .`); prepare `examples/sop.json` + X-AnyLabeling sidecar；`build-prototypes` / `segment` / `eval`；GPU optional；point to spec §2 examples.
 
 - [ ] Commit: `docs: add README with offline segmentation workflow`
 
@@ -718,7 +742,9 @@ Content: install (`pip install -e .`), prepare `sop.json` / `fewshot.json`, `bui
 | Segmentation metrics only | 13 |
 | VLM optional budgeted | 14 |
 | Config from YAML | 1 |
-| Fewshot one-cycle validation | 2 |
+| sop.json + X-AnyLabeling bridge | 2 |
+| Fewshot one-cycle validation (idle OK, no skip) | 2 |
+| allow_skip_forward for long video | 10 |
 | Reports P50/NVA | Explicitly out of scope |
 | InternVideo2 / Chinese-CLIP | Explicitly out of scope |
 
